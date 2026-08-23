@@ -13,7 +13,6 @@ import pandas as pd
 import streamlit.components.v1 as components
 from datetime import datetime
 
-# 尝试导入 supabase
 try:
     from supabase import create_client, Client
     HAS_SUPABASE = True
@@ -26,7 +25,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# 你的网页实际访问链接
 APP_URL = "https://extension-of-holland-test.streamlit.app"
 
 # ================= 数据库连接与写入 =================
@@ -44,8 +42,8 @@ def record_test_result(code):
     if supabase:
         try:
             supabase.table("test_records").insert({"holland_code": code}).execute()
-        except Exception as e:
-            pass # 静默失败，不打扰用户端测试
+        except Exception:
+            pass
 
 def fetch_all_records():
     supabase = get_supabase_client()
@@ -371,7 +369,7 @@ def create_share_poster(scores, top3_code, first_type, url):
     data_pts = []
     for k, a in zip(hex_keys, angles):
         val = scores[k]
-        r = (val / 10.0) * max_r
+        r = (val / 20.0) * max_r  # 适配 20 分满分
         data_pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
 
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -416,14 +414,11 @@ with st.sidebar:
             df = pd.DataFrame(records)
             st.metric("总参与人数", f"{len(df)} 人")
             
-            # 统计各类型的计数
             code_counts = df['holland_code'].value_counts().reset_index()
             code_counts.columns = ['霍兰德代码', '出现次数']
             
-            # 显示计数表格
             st.dataframe(code_counts, use_container_width=True)
             
-            # 可视化柱状图
             fig_bar = px.bar(
                 code_counts.head(10), 
                 x='霍兰德代码', 
@@ -434,7 +429,6 @@ with st.sidebar:
             fig_bar.update_layout(height=280, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_bar, use_container_width=True)
             
-            # 导出 CSV
             csv_data = df.to_csv(index=False).encode('utf-8_sig')
             st.download_button(
                 "📥 导出全部记录 (CSV)",
@@ -454,13 +448,24 @@ if "step" not in st.session_state:
     st.session_state.recorded = False
 
 st.title("🎯 霍兰德职业兴趣倾向测评")
-st.caption("基于国际 RIASEC 模型 · 60 题深度测评 · 全面解析与空间投影")
+st.caption("基于国际 RIASEC 模型 · 60 题深度测评 · 3 级选项精准度量")
+
+# ================= 选项分值映射表 =================
+OPTION_MAP = {
+    "喜欢 / 是": 2,
+    "不确定 / 一般": 1,
+    "不喜欢 / 否": 0
+}
 
 # ================= 测试作答流 =================
 if st.session_state.step < len(sections_data):
     current = sections_data[st.session_state.step]
     
-    st.info("💡 **测试规则**：凭第一直觉判断，不要考虑薪资、地位或“能力行不行”，只看“喜不喜欢/乐不乐意做”。")
+    st.info("""
+    💡 **测试规则与建议**：
+    1. 凭第一直觉判断，不要考虑薪资地位或“能力行不行”，只看“喜不喜欢/乐不乐意做”。
+    2. **如果某件事你没有经历过**，请想象：如果有机会体验，你是否有探索尝试的意愿？
+    """)
     st.markdown(f"### {current['title']}")
     st.progress(st.session_state.step / len(sections_data))
 
@@ -469,7 +474,7 @@ if st.session_state.step < len(sections_data):
         for idx, q in enumerate(current["questions"]):
             ans = st.radio(
                 f"{idx+1}. {q}",
-                options=["是", "否"],
+                options=["喜欢 / 是", "不确定 / 一般", "不喜欢 / 否"],
                 index=None,
                 horizontal=True,
                 key=f"{current['key']}_q_{idx}"
@@ -483,7 +488,7 @@ if st.session_state.step < len(sections_data):
             if any(a is None for a in answers):
                 st.error("⚠️ 本部分还有题目未选择，请全部选择后再提交。")
             else:
-                score = sum(1 for a in answers if a == "是")
+                score = sum(OPTION_MAP[a] for a in answers)
                 st.session_state.scores[f"{current['key']}-实际得分"] = score
                 st.session_state.step += 1
                 st.rerun()
@@ -497,7 +502,6 @@ else:
     top3_code = "".join([item[0] for item in sorted_scores[:3]])
     top1_key, top2_key, top3_key = sorted_scores[0][0], sorted_scores[1][0], sorted_scores[2][0]
     
-    # 自动记录到云端数据库（防重刷：每次测试仅记录一次）
     if not st.session_state.get("recorded", False):
         record_test_result(top3_code)
         st.session_state.recorded = True
@@ -505,17 +509,17 @@ else:
     sec_dict = {s["key"]: s for s in sections_data}
     first_type, second_type, third_type = sec_dict[top1_key], sec_dict[top2_key], sec_dict[top3_key]
 
-    # 指标计算
+    # 分化度（0~20 分区间）
     diff_index = sorted_scores[0][1] - sorted_scores[-1][1]
-    if diff_index >= 6:
+    if diff_index >= 10:
         diff_status = "高度分化（极度清晰）"
         diff_desc = "你的职业偏好边界极其清晰，优势区与排斥区对比鲜明，职业选择决策效率极高。"
-    elif diff_index >= 3:
+    elif diff_index >= 5:
         diff_status = "中度分化（健康平衡）"
         diff_desc = "你的兴趣倾向重点突出，同时具备良好的综合适应力，可塑性强。"
     else:
-        diff_status = "低分化（多潜能/扁平）"
-        diff_desc = "各维度得分相对接近，表明你具备多向探索潜能，或处于职业定位重塑期。"
+        diff_status = "低分化（多潜能/探索期）"
+        diff_desc = "各维度得分相对均衡，表明你正处于广泛探索期或具备多向潜能。"
 
     hex_order = ['R', 'I', 'A', 'S', 'E', 'C']
     idx1 = hex_order.index(top1_key)
@@ -533,8 +537,8 @@ else:
         consistency_desc = f"{top1_key} 与 {top2_key} 位于对角线两端，常伴随心理内在张力，也是诞生跨界颠覆型人才的温床。"
 
     r, i_sc, a, s, e, c = scores['R'], scores['I'], scores['A'], scores['S'], scores['E'], scores['C']
-    tp_score = 2.0 * r + 1.0 * i_sc - 1.0 * a - 2.0 * s - 1.0 * e + 1.0 * c
-    di_score = - 1.73 * i_sc - 1.73 * a + 1.73 * e + 1.73 * c
+    tp_score = (2.0 * r + 1.0 * i_sc - 1.0 * a - 2.0 * s - 1.0 * e + 1.0 * c) / 2.0
+    di_score = (- 1.73 * i_sc - 1.73 * a + 1.73 * e + 1.73 * c) / 2.0
 
     st.success(f"## 🏆 您的霍兰德职业代码：**{top3_code}**")
     st.caption(f"主导模式：{first_type['name'].split()[0]}（主） + {second_type['name'].split()[0]}（辅） + {third_type['name'].split()[0]}（辅）")
@@ -547,7 +551,7 @@ else:
     ])
 
     with tab1:
-        st.markdown("#### 1. 六维多边形雷达图 (0–10分)")
+        st.markdown("#### 1. 六维多边形雷达图 (0–20分)")
         categories = ['现实型(R)', '研究型(I)', '艺术型(A)', '社会型(S)', '企业型(E)', '常规型(C)']
         keys_order = ['R', 'I', 'A', 'S', 'E', 'C']
         values = [scores[k] for k in keys_order]
@@ -565,7 +569,7 @@ else:
             name='得分'
         ))
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 10])),
+            polar=dict(radialaxis=dict(visible=True, range=[0, 20])),
             showlegend=False,
             height=340,
             margin=dict(l=40, r=40, t=20, b=20)
@@ -589,10 +593,9 @@ else:
             for s in sections_data:
                 sc = scores[s['key']]
                 pct = (sc / total_score) * 100
-                st.write(f"**{s['name']}**：`{sc} / 10 分`（占比 **{pct:.1f}%**）")
+                st.write(f"**{s['name']}**：`{sc} / 20 分`（占比 **{pct:.1f}%**）")
                 st.progress(pct / 100)
 
-        # ---------------- 分享与一键复制模块 ----------------
         st.markdown("---")
         st.subheader("📤 分享我的测评结果")
         
