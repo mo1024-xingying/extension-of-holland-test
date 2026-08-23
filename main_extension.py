@@ -19,7 +19,7 @@ try:
 except ImportError:
     HAS_SUPABASE = False
 
-# ================= 隐藏侧边栏（默认给普通用户隐藏） =================
+# ================= 隐藏侧边栏（默认对普通用户隐藏） =================
 query_params = st.query_params
 is_admin_mode = query_params.get("admin") == "true"
 
@@ -30,7 +30,6 @@ st.set_page_config(
     initial_sidebar_state="expanded" if is_admin_mode else "collapsed"
 )
 
-# 非管理员模式下通过 CSS 强制隐藏侧边栏箭头与菜单
 if not is_admin_mode:
     st.markdown(
         """
@@ -463,6 +462,7 @@ if "step" not in st.session_state:
     st.session_state.step = 0
     st.session_state.scores = {}
     st.session_state.recorded = False
+    st.session_state.user_answers = {}  # 保存每一道题目的用户选择，支持退回恢复
 
 st.title("🎯 霍兰德职业兴趣倾向测评")
 st.caption("基于国际 RIASEC 模型 · 60 题深度测评 · 3 级选项精准度量")
@@ -488,22 +488,48 @@ if st.session_state.step < len(sections_data):
     with st.form(key=f"form_{current['key']}"):
         answers = []
         for idx, q in enumerate(current["questions"]):
+            q_key = f"{current['key']}_q_{idx}"
+            saved_val = st.session_state.user_answers.get(q_key, None)
+            
+            # 如果之前选过，自动恢复选中项
             ans = st.radio(
                 f"{idx+1}. {q}",
                 options=["喜欢 / 是", "不确定 / 一般", "不喜欢 / 否"],
-                index=None,
+                index=["喜欢 / 是", "不确定 / 一般", "不喜欢 / 否"].index(saved_val) if saved_val else None,
                 horizontal=True,
-                key=f"{current['key']}_q_{idx}"
+                key=q_key
             )
             answers.append(ans)
         
-        btn_label = "提交并查看完整深度报告" if st.session_state.step == len(sections_data) - 1 else "下一部分"
-        submitted = st.form_submit_button(btn_label)
+        # 底部按钮布局：从第二部分开始展示“退回上一部分”
+        if st.session_state.step > 0:
+            col_back, col_next = st.columns([1, 1])
+            with col_back:
+                prev_submitted = st.form_submit_button("⬅️ 返回上一部分", use_container_width=True)
+            with col_next:
+                btn_label = "提交并查看完整深度报告" if st.session_state.step == len(sections_data) - 1 else "下一部分 ➡️"
+                next_submitted = st.form_submit_button(btn_label, use_container_width=True)
+        else:
+            prev_submitted = False
+            next_submitted = st.form_submit_button("下一部分 ➡️", use_container_width=True)
         
-        if submitted:
+        # 处理返回上一部分
+        if prev_submitted:
+            # 即使返回也临时暂存当前已填的内容
+            for idx, ans_val in enumerate(answers):
+                if ans_val is not None:
+                    st.session_state.user_answers[f"{current['key']}_q_{idx}"] = ans_val
+            st.session_state.step -= 1
+            st.rerun()
+
+        # 处理进入下一部分/提交
+        if next_submitted:
             if any(a is None for a in answers):
                 st.error("⚠️ 本部分还有题目未选择，请全部选择后再提交。")
             else:
+                for idx, ans_val in enumerate(answers):
+                    st.session_state.user_answers[f"{current['key']}_q_{idx}"] = ans_val
+                
                 score = sum(OPTION_MAP[a] for a in answers)
                 st.session_state.scores[f"{current['key']}-实际得分"] = score
                 st.session_state.step += 1
@@ -696,4 +722,5 @@ else:
         st.session_state.step = 0
         st.session_state.scores = {}
         st.session_state.recorded = False
+        st.session_state.user_answers = {}
         st.rerun()
