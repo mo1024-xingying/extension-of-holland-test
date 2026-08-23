@@ -1,5 +1,6 @@
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.express as px
 import numpy as np
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
@@ -8,7 +9,16 @@ import math
 import os
 import urllib.request
 import json
+import pandas as pd
 import streamlit.components.v1 as components
+from datetime import datetime
+
+# 尝试导入 supabase
+try:
+    from supabase import create_client, Client
+    HAS_SUPABASE = True
+except ImportError:
+    HAS_SUPABASE = False
 
 st.set_page_config(
     page_title="霍兰德职业兴趣倾向测评",
@@ -17,18 +27,45 @@ st.set_page_config(
 )
 
 # 你的网页实际访问链接
-APP_URL = "https://exhollandtest.streamlit.app/"
+APP_URL = "https://extension-of-holland-test.streamlit.app"
+
+# ================= 数据库连接与写入 =================
+def get_supabase_client():
+    if not HAS_SUPABASE:
+        return None
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY")
+    if url and key:
+        return create_client(url, key)
+    return None
+
+def record_test_result(code):
+    supabase = get_supabase_client()
+    if supabase:
+        try:
+            supabase.table("test_records").insert({"holland_code": code}).execute()
+        except Exception as e:
+            pass # 静默失败，不打扰用户端测试
+
+def fetch_all_records():
+    supabase = get_supabase_client()
+    if supabase:
+        try:
+            res = supabase.table("test_records").select("*").order("created_at", desc=True).execute()
+            return res.data
+        except Exception as e:
+            st.error(f"获取数据失败: {e}")
+            return []
+    return []
 
 # ================= 自动加载/下载中文字体 =================
 @st.cache_resource
 def get_chinese_font_path():
-    # 优先检查本地是否存在 font.ttf
     if os.path.exists("font.ttf"):
         return "font.ttf"
     
     font_path = "wqy-microhei.ttc"
     if not os.path.exists(font_path):
-        # 从官方镜像高速下载开源中文字体 (文泉驿微米黑)
         font_url = "https://github.com/anthonyfok/fonts-wqy-microhei/raw/master/wqy-microhei.ttc"
         try:
             urllib.request.urlretrieve(font_url, font_path)
@@ -89,7 +126,7 @@ def copy_button(text_to_copy: str, button_text: str = "📋 一键复制分享�
     """
     components.html(html_code, height=65)
 
-# ================= 题库与维度定义 (每部分 10 题，共 60 题) =================
+# ================= 题库与维度定义 =================
 sections_data = [
     {
         "key": "R", "title": "第一部分", "name": "现实型 (R)",
@@ -282,14 +319,10 @@ def create_share_poster(scores, top3_code, first_type, url):
     img = Image.new("RGB", (width, height), "#0f172a")
     draw = ImageDraw.Draw(img)
 
-    # 装饰光晕背景
     draw.ellipse([(-100, -100), (450, 450)], fill="#1e1b4b")
     draw.ellipse([(400, 750), (850, 1200)], fill="#172554")
-    
-    # 顶部卡片
     draw.rounded_rectangle([(35, 35), (715, 1030)], radius=24, fill="#1e293b", outline="#334155", width=2)
     
-    # 获取并加载中文字体
     font_file = get_chinese_font_path()
     if font_file:
         try:
@@ -303,47 +336,38 @@ def create_share_poster(scores, top3_code, first_type, url):
     else:
         font_title = font_code = font_sub = font_label = font_small = ImageFont.load_default()
 
-    # 1. 顶部标语
     draw.text((65, 65), "HOLLAND CAREER PROFILE", font=font_small, fill="#818cf8")
     draw.text((65, 95), "霍兰德职业兴趣倾向画像", font=font_title, fill="#f8fafc")
 
-    # 2. 霍兰德代码徽章
     draw.rounded_rectangle([(65, 145), (685, 235)], radius=16, fill="#312e81", outline="#6366f1", width=2)
     draw.text((90, 162), f"职业代码:  {top3_code}", font=font_code, fill="#e0e7ff")
 
-    # 3. 主导特质解读
     draw.text((65, 255), f"主导特质：{first_type['name']}", font=font_title, fill="#38bdf8")
     
-    # 自动换行
     traits_text = f"特点：{first_type['traits']}"
     max_chars_per_line = 32
     lines = [traits_text[i:i+max_chars_per_line] for i in range(0, len(traits_text), max_chars_per_line)]
     for idx, line in enumerate(lines[:2]):
         draw.text((65, 298 + idx * 26), line, font=font_sub, fill="#94a3b8")
 
-    # 4. 绘制中心六角雷达图
     cx, cy = 375, 560
     max_r = 135
     angles = [i * (2 * math.pi / 6) - math.pi / 2 for i in range(6)]
     hex_keys = ['R', 'I', 'A', 'S', 'E', 'C']
     hex_labels = ['R 现实', 'I 研究', 'A 艺术', 'S 社会', 'E 企业', 'C 常规']
 
-    # 同心六边形网格
     for level in [0.33, 0.66, 1.0]:
         grid_pts = [(cx + max_r * level * math.cos(a), cy + max_r * level * math.sin(a)) for a in angles]
         draw.polygon(grid_pts, outline="#334155", fill=None)
 
-    # 轴线与坐标标签
     for a, label in zip(angles, hex_labels):
         x = cx + max_r * math.cos(a)
         y = cy + max_r * math.sin(a)
         draw.line([(cx, cy), (x, y)], fill="#334155", width=1)
-        
         lx = cx + (max_r + 28) * math.cos(a) - 22
         ly = cy + (max_r + 28) * math.sin(a) - 10
         draw.text((lx, ly), label, font=font_label, fill="#cbd5e1")
 
-    # 得分多边形
     data_pts = []
     for k, a in zip(hex_keys, angles):
         val = scores[k]
@@ -359,10 +383,8 @@ def create_share_poster(scores, top3_code, first_type, url):
     for pt in data_pts:
         draw.ellipse([(pt[0] - 4, pt[1] - 4), (pt[0] + 4, pt[1] + 4)], fill="#ffffff", outline="#6366f1")
 
-    # 5. 分割线
     draw.line([(65, 750), (685, 750)], fill="#334155", width=1)
 
-    # 6. 二维码生成
     qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=5, border=2)
     qr.add_data(url)
     qr.make(fit=True)
@@ -370,22 +392,66 @@ def create_share_poster(scores, top3_code, first_type, url):
     qr_img = qr_img.resize((150, 150))
     img.paste(qr_img, (65, 780))
 
-    # 二维码说明文字
     draw.text((235, 805), "长按扫码 · 测测你的职业代码", font=font_title, fill="#f8fafc")
     draw.text((235, 850), "60 题深度版 · 探索现代跨界与职业潜能", font=font_sub, fill="#94a3b8")
     draw.text((235, 885), f"网址: {url[:36]}...", font=font_small, fill="#64748b")
-
-    # 底部版权
     draw.text((65, 980), "RIASEC Model Assessment © 2026", font=font_small, fill="#475569")
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", quality=95)
     return buf.getvalue()
 
+# ================= 侧边栏：管理员专属后台 =================
+with st.sidebar:
+    st.title("🔐 管理员后台")
+    admin_pwd_input = st.text_input("请输入管理密码：", type="password")
+    
+    admin_correct_pwd = st.secrets.get("ADMIN_PASSWORD", "admin888")
+    
+    if admin_pwd_input and admin_pwd_input == admin_correct_pwd:
+        st.success("✅ 认证成功")
+        st.markdown("### 📊 实时测试统计")
+        records = fetch_all_records()
+        if records:
+            df = pd.DataFrame(records)
+            st.metric("总参与人数", f"{len(df)} 人")
+            
+            # 统计各类型的计数
+            code_counts = df['holland_code'].value_counts().reset_index()
+            code_counts.columns = ['霍兰德代码', '出现次数']
+            
+            # 显示计数表格
+            st.dataframe(code_counts, use_container_width=True)
+            
+            # 可视化柱状图
+            fig_bar = px.bar(
+                code_counts.head(10), 
+                x='霍兰德代码', 
+                y='出现次数', 
+                text='出现次数',
+                title="Top 10 最热门职业代码"
+            )
+            fig_bar.update_layout(height=280, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_bar, use_container_width=True)
+            
+            # 导出 CSV
+            csv_data = df.to_csv(index=False).encode('utf-8_sig')
+            st.download_button(
+                "📥 导出全部记录 (CSV)",
+                data=csv_data,
+                file_name=f"holland_records_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("暂无测试记录或未配置数据库")
+    elif admin_pwd_input:
+        st.error("密码错误")
+
 # ================= 状态管理 =================
 if "step" not in st.session_state:
     st.session_state.step = 0
     st.session_state.scores = {}
+    st.session_state.recorded = False
 
 st.title("🎯 霍兰德职业兴趣倾向测评")
 st.caption("基于国际 RIASEC 模型 · 60 题深度测评 · 全面解析与空间投影")
@@ -431,6 +497,11 @@ else:
     top3_code = "".join([item[0] for item in sorted_scores[:3]])
     top1_key, top2_key, top3_key = sorted_scores[0][0], sorted_scores[1][0], sorted_scores[2][0]
     
+    # 自动记录到云端数据库（防重刷：每次测试仅记录一次）
+    if not st.session_state.get("recorded", False):
+        record_test_result(top3_code)
+        st.session_state.recorded = True
+
     sec_dict = {s["key"]: s for s in sections_data}
     first_type, second_type, third_type = sec_dict[top1_key], sec_dict[top2_key], sec_dict[top3_key]
 
@@ -532,10 +603,8 @@ else:
             f"👉 快来测测你的职业潜能与空间投影：{APP_URL}"
         )
         
-        # 原生一键复制按钮
         copy_button(share_content, button_text="📋 一键复制分享文案")
 
-        # 动态生成海报图片
         poster_bytes = create_share_poster(scores, top3_code, first_type, APP_URL)
         
         with st.expander("🖼️ 点击预览/下载高清分享卡片", expanded=True):
@@ -608,4 +677,5 @@ else:
     if st.button("🔄 重新进行测评", use_container_width=True):
         st.session_state.step = 0
         st.session_state.scores = {}
+        st.session_state.recorded = False
         st.rerun()
