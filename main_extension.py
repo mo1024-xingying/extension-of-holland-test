@@ -19,11 +19,28 @@ try:
 except ImportError:
     HAS_SUPABASE = False
 
+# ================= 隐藏侧边栏（默认给普通用户隐藏） =================
+query_params = st.query_params
+is_admin_mode = query_params.get("admin") == "true"
+
 st.set_page_config(
     page_title="霍兰德职业兴趣倾向测评",
     page_icon="🎯",
-    layout="centered"
+    layout="centered",
+    initial_sidebar_state="expanded" if is_admin_mode else "collapsed"
 )
+
+# 非管理员模式下通过 CSS 强制隐藏侧边栏箭头与菜单
+if not is_admin_mode:
+    st.markdown(
+        """
+        <style>
+            [data-testid="collapsedControl"] { display: none !important; }
+            section[data-testid="stSidebar"] { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
 APP_URL = "https://extension-of-holland-test.streamlit.app"
 
@@ -369,7 +386,7 @@ def create_share_poster(scores, top3_code, first_type, url):
     data_pts = []
     for k, a in zip(hex_keys, angles):
         val = scores[k]
-        r = (val / 20.0) * max_r  # 适配 20 分满分
+        r = (val / 20.0) * max_r
         data_pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
 
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -399,47 +416,47 @@ def create_share_poster(scores, top3_code, first_type, url):
     img.save(buf, format="PNG", quality=95)
     return buf.getvalue()
 
-# ================= 侧边栏：管理员专属后台 =================
-with st.sidebar:
-    st.title("🔐 管理员后台")
-    admin_pwd_input = st.text_input("请输入管理密码：", type="password")
-    
-    admin_correct_pwd = st.secrets.get("ADMIN_PASSWORD", "admin888")
-    
-    if admin_pwd_input and admin_pwd_input == admin_correct_pwd:
-        st.success("✅ 认证成功")
-        st.markdown("### 📊 实时测试统计")
-        records = fetch_all_records()
-        if records:
-            df = pd.DataFrame(records)
-            st.metric("总参与人数", f"{len(df)} 人")
-            
-            code_counts = df['holland_code'].value_counts().reset_index()
-            code_counts.columns = ['霍兰德代码', '出现次数']
-            
-            st.dataframe(code_counts, use_container_width=True)
-            
-            fig_bar = px.bar(
-                code_counts.head(10), 
-                x='霍兰德代码', 
-                y='出现次数', 
-                text='出现次数',
-                title="Top 10 最热门职业代码"
-            )
-            fig_bar.update_layout(height=280, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_bar, use_container_width=True)
-            
-            csv_data = df.to_csv(index=False).encode('utf-8_sig')
-            st.download_button(
-                "📥 导出全部记录 (CSV)",
-                data=csv_data,
-                file_name=f"holland_records_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-        else:
-            st.info("暂无测试记录或未配置数据库")
-    elif admin_pwd_input:
-        st.error("密码错误")
+# ================= 侧边栏：仅在带暗号参数时加载 =================
+if is_admin_mode:
+    with st.sidebar:
+        st.title("🔐 管理员后台")
+        admin_pwd_input = st.text_input("请输入管理密码：", type="password")
+        admin_correct_pwd = st.secrets.get("ADMIN_PASSWORD", "admin888")
+        
+        if admin_pwd_input and admin_pwd_input == admin_correct_pwd:
+            st.success("✅ 认证成功")
+            st.markdown("### 📊 实时测试统计")
+            records = fetch_all_records()
+            if records:
+                df = pd.DataFrame(records)
+                st.metric("总参与人数", f"{len(df)} 人")
+                
+                code_counts = df['holland_code'].value_counts().reset_index()
+                code_counts.columns = ['霍兰德代码', '出现次数']
+                
+                st.dataframe(code_counts, use_container_width=True)
+                
+                fig_bar = px.bar(
+                    code_counts.head(10), 
+                    x='霍兰德代码', 
+                    y='出现次数', 
+                    text='出现次数',
+                    title="Top 10 最热门职业代码"
+                )
+                fig_bar.update_layout(height=280, margin=dict(l=10, r=10, t=30, b=10))
+                st.plotly_chart(fig_bar, use_container_width=True)
+                
+                csv_data = df.to_csv(index=False).encode('utf-8_sig')
+                st.download_button(
+                    "📥 导出全部记录 (CSV)",
+                    data=csv_data,
+                    file_name=f"holland_records_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("暂无测试记录或未配置数据库")
+        elif admin_pwd_input:
+            st.error("密码错误")
 
 # ================= 状态管理 =================
 if "step" not in st.session_state:
@@ -450,7 +467,6 @@ if "step" not in st.session_state:
 st.title("🎯 霍兰德职业兴趣倾向测评")
 st.caption("基于国际 RIASEC 模型 · 60 题深度测评 · 3 级选项精准度量")
 
-# ================= 选项分值映射表 =================
 OPTION_MAP = {
     "喜欢 / 是": 2,
     "不确定 / 一般": 1,
@@ -509,7 +525,6 @@ else:
     sec_dict = {s["key"]: s for s in sections_data}
     first_type, second_type, third_type = sec_dict[top1_key], sec_dict[top2_key], sec_dict[top3_key]
 
-    # 分化度（0~20 分区间）
     diff_index = sorted_scores[0][1] - sorted_scores[-1][1]
     if diff_index >= 10:
         diff_status = "高度分化（极度清晰）"
